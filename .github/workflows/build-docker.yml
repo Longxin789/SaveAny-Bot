@@ -4,7 +4,12 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:  # 添加手动触发选项
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform (comma separated)"
+        required: false
+        default: "amd64,arm64,arm/v7"
 
 env:
   REGISTRY: ghcr.io
@@ -16,6 +21,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+    strategy:
+      matrix:
+        platform: 
+          - { arch: "amd64", variant: "" }
+          - { arch: "arm64", variant: "" }
+          - { arch: "arm", variant: "v7" }
 
     steps:
       - name: Checkout repository
@@ -30,12 +42,13 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=raw,value=latest-${TARGETARCH}${TARGETVARIANT},enable=true
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm  # 明确指定ARM平台支持
+          platforms: ${{ matrix.platform.arch }}${{ matrix.platform.variant && format(',{0}', matrix.platform.variant) || '' }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -52,19 +65,99 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        id: build-and-push
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm/v7  # 添加arm/v7支持
+          platforms: linux/${{ matrix.platform.arch }}${{ matrix.platform.variant && format('/{0}', matrix.platform.variant) || '' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             GitCommit=${{ github.sha }}
             BuildTime=${{ fromJson(toJSON(github.event.repository.pushed_at)) }}
+            TARGETARCH=${{ matrix.platform.arch }}
+            TARGETVARIANT=${{ matrix.platform.variant || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=maxname: Build and Publish Docker Image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform (comma separated)"
+        required: false
+        default: "amd64,arm64,arm/v7"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        platform: 
+          - { arch: "amd64", variant: "" }
+          - { arch: "arm64", variant: "" }
+          - { arch: "arm", variant: "v7" }
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest-${TARGETARCH}${TARGETVARIANT},enable=true
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.platform.arch }}${{ matrix.platform.variant && format(',{0}', matrix.platform.variant) || '' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.platform.arch }}${{ matrix.platform.variant && format('/{0}', matrix.platform.variant) || '' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            GitCommit=${{ github.sha }}
+            BuildTime=${{ fromJson(toJSON(github.event.repository.pushed_at)) }}
+            TARGETARCH=${{ matrix.platform.arch }}
+            TARGETVARIANT=${{ matrix.platform.variant || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
